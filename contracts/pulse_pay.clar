@@ -3,9 +3,11 @@
 ;; Constants
 (define-constant ERR-NOT-AUTHORIZED (err u100))
 (define-constant ERR-PAYMENT-NOT-FOUND (err u101))
-(define-constant ERR-INVALID-AMOUNT (err u102))
+(define-constant ERR-INVALID-AMOUNT (err u102)) 
 (define-constant ERR-INVALID-FREQUENCY (err u103))
 (define-constant ERR-INSUFFICIENT-BALANCE (err u104))
+(define-constant ERR-INVALID-START-TIME (err u105))
+(define-constant ERR-INVALID-END-TIME (err u106))
 
 ;; Data structures
 (define-map PaymentAgreements
@@ -16,7 +18,11 @@
         amount: uint,
         frequency: uint, ;; In blocks
         last-paid: uint,
-        active: bool
+        active: bool,
+        start-time: uint, ;; Optional start time in blocks
+        end-time: uint,   ;; Optional end time in blocks
+        max-payments: uint ;; Maximum number of payments (0 for unlimited)
+        payments-made: uint
     }
 )
 
@@ -32,19 +38,32 @@
         agreement (let (
             (current-block block-height)
             (next-payment (+ (get last-paid agreement) (get frequency agreement)))
+            (start-time (get start-time agreement))
+            (end-time (get end-time agreement))
+            (max-payments (get max-payments agreement))
+            (payments-made (get payments-made agreement))
         )
-        (and (get active agreement) (>= current-block next-payment)))
+        (and 
+            (get active agreement)
+            (>= current-block next-payment)
+            (>= current-block start-time)
+            (or (is-eq end-time u0) (<= current-block end-time))
+            (or (is-eq max-payments u0) (< payments-made max-payments))
+        ))
         false
     )
 )
 
 ;; Public functions
-(define-public (create-agreement (payee principal) (amount uint) (frequency uint))
+(define-public (create-agreement (payee principal) (amount uint) (frequency uint) 
+                               (start-time uint) (end-time uint) (max-payments uint))
     (let (
         (agreement-id (var-get agreement-nonce))
     )
     (asserts! (> amount u0) ERR-INVALID-AMOUNT)
     (asserts! (> frequency u0) ERR-INVALID-FREQUENCY)
+    (asserts! (or (is-eq start-time u0) (>= start-time block-height)) ERR-INVALID-START-TIME)
+    (asserts! (or (is-eq end-time u0) (> end-time start-time)) ERR-INVALID-END-TIME)
     
     (map-set PaymentAgreements
         { agreement-id: agreement-id }
@@ -54,7 +73,11 @@
             amount: amount,
             frequency: frequency,
             last-paid: block-height,
-            active: true
+            active: true,
+            start-time: start-time,
+            end-time: end-time,
+            max-payments: max-payments,
+            payments-made: u0
         }
     )
     
@@ -77,7 +100,10 @@
             
             (map-set PaymentAgreements
                 { agreement-id: agreement-id }
-                (merge agreement { last-paid: block-height })
+                (merge agreement { 
+                    last-paid: block-height,
+                    payments-made: (+ (get payments-made agreement) u1)
+                })
             )
             (ok true)
         )
@@ -93,6 +119,28 @@
             (map-set PaymentAgreements
                 { agreement-id: agreement-id }
                 (merge agreement { active: false })
+            )
+            (ok true)
+        )
+        ERR-PAYMENT-NOT-FOUND
+    )
+)
+
+(define-public (update-schedule (agreement-id uint) (start-time uint) (end-time uint) (max-payments uint))
+    (match (get-agreement agreement-id)
+        agreement
+        (begin 
+            (asserts! (is-eq tx-sender (get payer agreement)) ERR-NOT-AUTHORIZED)
+            (asserts! (or (is-eq start-time u0) (>= start-time block-height)) ERR-INVALID-START-TIME)
+            (asserts! (or (is-eq end-time u0) (> end-time start-time)) ERR-INVALID-END-TIME)
+            
+            (map-set PaymentAgreements
+                { agreement-id: agreement-id }
+                (merge agreement {
+                    start-time: start-time,
+                    end-time: end-time,
+                    max-payments: max-payments
+                })
             )
             (ok true)
         )
